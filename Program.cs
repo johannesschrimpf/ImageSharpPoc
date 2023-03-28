@@ -1,8 +1,11 @@
 ﻿using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.Processing;
 using SixLabors.ImageSharp.Processing.Processors.Transforms;
+using MathNet.Numerics.Interpolation;
 using NumSharp;
 using System.Diagnostics;
+using MathNet.Numerics;
+using MathNet.Numerics.LinearAlgebra;
 
 // 8 bit per Pixel
 //using PixelFormat = System.Byte;
@@ -14,7 +17,32 @@ using ImageFormat = SixLabors.ImageSharp.PixelFormats.Rgb48;
 
 public class Program
 {
+    public static float field_of_view = 90 * (float)Math.PI / 180;
+    public static int num_beams = 640;
+    public static int num_rows = 480;
+    public static int num_cols = (int)(Math.Ceiling(Math.Sin((field_of_view) / 2) * num_rows * 2));
 
+    public static IEnumerable<double> beams = Enumerable.Range(0, num_beams).Select(x => (double)x); // list of beam numbers
+    public static IEnumerable<double> bearings = beams.Select(x => (x / num_beams - 0.5) * field_of_view); // list of angles for all beams in radians
+    public static IInterpolation method = Interpolate.Linear(bearings, beams); // map from angle to beam number, i.e. the x coordinate in the source image
+
+
+    public static float[] linspace(float startval, float endval, int steps)
+    {
+        //https://stackoverflow.com/questions/17046293/is-there-a-linspace-like-method-in-math-net
+        float interval = (endval / MathF.Abs(endval)) * MathF.Abs(endval - startval) / (steps - 1);
+        return (from val in Enumerable.Range(0, steps)
+                select startval + (val * interval)).ToArray();
+    }
+    public static PointF GetMapping(int x, int y)
+    {
+
+        float r = (float)Math.Sqrt(Math.Pow(x - num_cols / 2, 2) + Math.Pow(y, 2)); // The radius is the y coordinate in the source image
+        double angle = Math.Atan2(x - num_cols / 2, y);
+        float b = (float)method.Interpolate(angle); // get bearing number from angle, which corresponds to the x coordinate in the source image
+                                                    // Console.WriteLine($"x:{x} y:{y} r:{r} b:{b} (angle: {angle})");
+        return new PointF(b, r);
+    }
     public static void Main(string[] args)
     {
 
@@ -28,18 +56,7 @@ public class Program
             int inWidth = input.Width;
             int inHeight = input.Height;
 
-            var npMapX = np.load("map_x.npy");
-            var npMapY = np.load("map_y.npy");
-
             PixelFormat[,] inImgNativeR = new PixelFormat[inWidth, inHeight];
-
-
-            int outHeight = npMapX.shape[0];
-            int outWidth = npMapX.shape[1];
-
-            float[,] mapX = new float[outWidth, outHeight];
-            float[,] mapY = new float[outWidth, outHeight];
-
             for (int x = 0; x < inWidth; ++x)
             {
                 for (int y = 0; y < inHeight; ++y)
@@ -48,15 +65,26 @@ public class Program
                 }
             }
 
+
+            int outHeight = input.Height;
+            int outWidth = num_cols;
+
+            float[,] mapX = new float[outWidth, outHeight];
+            float[,] mapY = new float[outWidth, outHeight];
+            var sw = new Stopwatch();
+            sw.Start();
+
             for (int x = 0; x < outWidth; ++x)
             {
                 for (int y = 0; y < outHeight; ++y)
                 {
-                    // Numpy arrays are transposed, we fix this here
-                    mapX[x, y] = npMapX[y, x];
-                    mapY[x, y] = npMapY[y, x];
+                    PointF p = GetMapping(x, y);
+                    mapX[x, y] = p.X;
+                    mapY[x, y] = p.Y;
                 }
             }
+            var initElapsed = sw.ElapsedMilliseconds;
+            Console.WriteLine($"Initialization time: {initElapsed}");
 
             Image<ImageFormat> outImg = new Image<ImageFormat>(outWidth, outHeight);
             Image<ImageFormat> outImgInterpolated = new Image<ImageFormat>(outWidth, outHeight);
@@ -64,9 +92,7 @@ public class Program
             PixelFormat[,] outImgNativeative = new PixelFormat[outWidth, outHeight];
             PixelFormat[,] outImgNativeInterpolated = new PixelFormat[outWidth, outHeight];
 
-
-            var sw = new Stopwatch();
-            sw.Start();
+            sw.Restart();
             for (int x = 0; x < outWidth; ++x)
             {
                 for (int y = 0; y < outHeight; ++y)
@@ -100,8 +126,8 @@ public class Program
                 }
 
             }
-
-            Console.WriteLine(sw.ElapsedMilliseconds);
+            var remapElapsed = sw.ElapsedMilliseconds;
+            Console.WriteLine($"Remap time: {remapElapsed}");
             for (int x = 0; x < outWidth; ++x)
             {
                 for (int y = 0; y < outHeight; ++y)
